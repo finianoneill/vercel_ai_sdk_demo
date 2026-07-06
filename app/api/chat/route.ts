@@ -24,6 +24,13 @@ export async function POST(req: Request) {
     messages: await convertToModelMessages(messages),
     // Allow the model to call tools, read the results, and keep going.
     stopWhen: isStepCount(5),
+    // Enable Claude's extended thinking so reasoning streams to the client
+    // (toUIMessageStream forwards reasoning parts by default).
+    providerOptions: {
+      anthropic: {
+        thinking: { type: "enabled", budgetTokens: 4096 },
+      },
+    },
     tools: {
       getWeather: tool({
         description: "Get the current weather for a city (mock data)",

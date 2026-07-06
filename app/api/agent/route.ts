@@ -1,4 +1,10 @@
-import { isStepCount, tool, ToolLoopAgent } from "ai";
+import {
+  createAgentUIStreamResponse,
+  isStepCount,
+  tool,
+  ToolLoopAgent,
+  type UIMessage,
+} from "ai";
 import { z } from "zod";
 import { CHAT_MODEL } from "@/lib/models";
 import { evaluateExpression } from "@/lib/calculator";
@@ -12,6 +18,12 @@ const agent = new ToolLoopAgent({
     "tools for every calculation or random value — never compute them yourself. " +
     "When you are done, summarize what you did.",
   stopWhen: isStepCount(8),
+  // Extended thinking streams reasoning parts to the client between steps.
+  providerOptions: {
+    anthropic: {
+      thinking: { type: "enabled", budgetTokens: 4096 },
+    },
+  },
   tools: {
     calculate: tool({
       description:
@@ -47,26 +59,11 @@ const agent = new ToolLoopAgent({
 });
 
 export async function POST(req: Request) {
-  const { prompt }: { prompt: string } = await req.json();
+  const { messages }: { messages: UIMessage[] } = await req.json();
 
-  const result = await agent.generate({ prompt });
-
-  // Flatten the agent loop into a step-by-step trace for the UI.
-  const steps = result.steps.map((step) => ({
-    text: step.text,
-    toolCalls: step.toolCalls.map((call) => ({
-      toolName: call.toolName,
-      input: call.input,
-    })),
-    toolResults: step.toolResults.map((toolResult) => ({
-      toolName: toolResult.toolName,
-      output: toolResult.output,
-    })),
-  }));
-
-  return Response.json({
-    text: result.text,
-    steps,
-    usage: result.usage,
+  // Runs the agent loop and streams reasoning, tool calls, and text live.
+  return createAgentUIStreamResponse({
+    agent,
+    uiMessages: messages,
   });
 }

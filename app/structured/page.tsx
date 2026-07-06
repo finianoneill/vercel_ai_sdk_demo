@@ -1,15 +1,52 @@
 "use client";
 
-import { experimental_useObject as useObject } from "@ai-sdk/react";
-import { useState } from "react";
-import { recipeSchema } from "@/lib/schemas";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport, parsePartialJson } from "ai";
+import { useEffect, useState } from "react";
+import { ReasoningBlock } from "@/components/reasoning-block";
+
+/** The recipe as it looks mid-stream: any field may still be missing. */
+interface PartialRecipe {
+  name?: string;
+  description?: string;
+  difficulty?: string;
+  prepMinutes?: number;
+  ingredients?: { item?: string; amount?: string }[];
+  steps?: string[];
+}
 
 export default function StructuredPage() {
   const [dish, setDish] = useState("");
-  const { object, submit, isLoading, error, stop } = useObject({
-    api: "/api/recipe",
-    schema: recipeSchema,
+  const [recipe, setRecipe] = useState<PartialRecipe | null>(null);
+  const { messages, sendMessage, setMessages, status, stop, error } = useChat({
+    transport: new DefaultChatTransport({ api: "/api/recipe" }),
   });
+  const isLoading = status === "submitted" || status === "streaming";
+
+  const assistantMessage = messages.findLast((m) => m.role === "assistant");
+  const reasoningParts =
+    assistantMessage?.parts.filter((part) => part.type === "reasoning") ?? [];
+  const jsonText =
+    assistantMessage?.parts
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .join("") ?? "";
+
+  // The structured output arrives as streamed JSON text; re-parse the partial
+  // document on every chunk so the card fills in progressively.
+  useEffect(() => {
+    // (the submit handler resets `recipe`, so an empty stream needs no work)
+    if (!jsonText) return;
+    let cancelled = false;
+    parsePartialJson(jsonText).then(({ value, state }) => {
+      if (cancelled) return;
+      if (state === "successful-parse" || state === "repaired-parse") {
+        setRecipe(value as PartialRecipe);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [jsonText]);
 
   return (
     <div className="space-y-6">
@@ -18,10 +55,10 @@ export default function StructuredPage() {
           Structured Output
         </h1>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          <code className="font-mono">useObject</code> +{" "}
-          <code className="font-mono">Output.object</code> stream a typed JSON
-          object that renders progressively — watch the recipe fill in as it
-          generates.
+          <code className="font-mono">Output.object</code> constrains the model
+          to a zod schema while its reasoning streams alongside —{" "}
+          <code className="font-mono">parsePartialJson</code> renders the
+          recipe progressively as the JSON arrives.
         </p>
       </div>
 
@@ -29,7 +66,9 @@ export default function StructuredPage() {
         onSubmit={(e) => {
           e.preventDefault();
           if (!dish.trim() || isLoading) return;
-          submit({ dish });
+          setMessages([]); // fresh generation each time, no chat history
+          setRecipe(null);
+          sendMessage({ text: dish });
         }}
         className="flex gap-2"
       >
@@ -42,7 +81,7 @@ export default function StructuredPage() {
         {isLoading ? (
           <button
             type="button"
-            onClick={stop}
+            onClick={() => stop()}
             className="rounded-lg border border-zinc-300 px-4 py-2.5 text-sm font-medium dark:border-zinc-700"
           >
             Stop
@@ -64,36 +103,48 @@ export default function StructuredPage() {
         </div>
       )}
 
-      {object && (
+      {status === "submitted" && (
+        <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+          <span className="animate-pulse font-mono text-xs text-zinc-500">
+            💭 thinking…
+          </span>
+        </div>
+      )}
+
+      {reasoningParts.map((part, i) => (
+        <ReasoningBlock key={i} part={part} />
+      ))}
+
+      {recipe && (
         <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold">{object.name}</h2>
+              <h2 className="text-lg font-semibold">{recipe.name}</h2>
               <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-                {object.description}
+                {recipe.description}
               </p>
             </div>
             <div className="flex shrink-0 gap-2 text-xs">
-              {object.difficulty && (
+              {recipe.difficulty && (
                 <span className="rounded-full bg-amber-100 px-2.5 py-1 font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                  {object.difficulty}
+                  {recipe.difficulty}
                 </span>
               )}
-              {object.prepMinutes != null && (
+              {recipe.prepMinutes != null && (
                 <span className="rounded-full bg-zinc-100 px-2.5 py-1 font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
-                  {object.prepMinutes} min
+                  {recipe.prepMinutes} min
                 </span>
               )}
             </div>
           </div>
 
-          {object.ingredients && object.ingredients.length > 0 && (
+          {recipe.ingredients && recipe.ingredients.length > 0 && (
             <div className="mt-5">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
                 Ingredients
               </h3>
               <ul className="mt-2 space-y-1 text-sm">
-                {object.ingredients.map((ingredient, i) => (
+                {recipe.ingredients.map((ingredient, i) => (
                   <li key={i} className="flex justify-between gap-4">
                     <span>{ingredient?.item}</span>
                     <span className="text-zinc-500">{ingredient?.amount}</span>
@@ -103,13 +154,13 @@ export default function StructuredPage() {
             </div>
           )}
 
-          {object.steps && object.steps.length > 0 && (
+          {recipe.steps && recipe.steps.length > 0 && (
             <div className="mt-5">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
                 Steps
               </h3>
               <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-sm">
-                {object.steps.map((step, i) => (
+                {recipe.steps.map((step, i) => (
                   <li key={i}>{step}</li>
                 ))}
               </ol>
